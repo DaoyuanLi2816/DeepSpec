@@ -39,6 +39,27 @@ def parse_args():
         default=0.0,
         help=("Confidence-head early-stop threshold. Confidence calibration metrics are collected only when this is 0.0."),
     )
+    parser.add_argument(
+        "--confidence-dump-dir",
+        type=str,
+        default=None,
+        help=(
+            "Dump per-proposal confidence records to "
+            "<dir>/<dataset>/confidence_records.jsonl for offline calibration "
+            "fitting (see scripts/fit_confidence_calibration.py). Requires "
+            "--confidence-threshold 0."
+        ),
+    )
+    parser.add_argument(
+        "--confidence-calibration-path",
+        type=str,
+        default=None,
+        help=(
+            "JSON file with per-position confidence temperatures fitted by "
+            "scripts/fit_confidence_calibration.py; the temperatures are "
+            "applied to the confidence logits during evaluation."
+        ),
+    )
     parser.add_argument("--tensorboard-dir", type=str, default=None)
     parser.add_argument("--step", type=int, default=None,help=("step for tensorboard logging"),)
     parser.add_argument("--seed", type=int, default=980406)

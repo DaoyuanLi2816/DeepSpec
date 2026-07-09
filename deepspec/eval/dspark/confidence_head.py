@@ -322,6 +322,7 @@ class ConfidenceHeadRecorder:
         tensorboard_dir: str | None,
         step: int | None,
         artifact_root: Path | None,
+        records_dir: Path | None = None,
     ):
         self.device = device
         self.max_proposal_tokens = int(max_proposal_tokens)
@@ -331,7 +332,9 @@ class ConfidenceHeadRecorder:
         self.tensorboard_dir = tensorboard_dir
         self.step = step
         self.artifact_root = artifact_root
+        self.records_dir = records_dir
         self.dataset_metrics: PerPositionConfidenceMetrics | None = None
+        self.records: list[dict] = []
         self.rows: list[dict] = []
 
     def start(self) -> None:
@@ -341,6 +344,7 @@ class ConfidenceHeadRecorder:
             num_fine_bins=self.num_fine_bins,
             device=self.device,
         )
+        self.records = []
 
     def observe(
         self,
@@ -373,6 +377,39 @@ class ConfidenceHeadRecorder:
             probs=cumprod_pred,
             targets=prefix_label,
         )
+        if self.records_dir is not None:
+            self.records.append(
+                {
+                    "logits": confidence_logits[0, :effective_length]
+                    .detach()
+                    .to(torch.float32)
+                    .cpu()
+                    .tolist(),
+                    "labels": prefix_label.long().cpu().tolist(),
+                }
+            )
+
+    def _gather_records(self) -> list[dict]:
+        records = self.records
+        self.records = []
+        if self.records_dir is None:
+            return []
+        gathered: list[list[dict] | None] = [None] * dist.get_world_size()
+        dist.all_gather_object(gathered, records)
+        merged: list[dict] = []
+        for rank_records in gathered:
+            merged.extend(rank_records or [])
+        return merged
+
+    def _write_records(self, *, dataset_name: str, records: list[dict]) -> Path:
+        assert self.records_dir is not None
+        dataset_dir = self.records_dir / dataset_name
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        records_path = dataset_dir / "confidence_records.jsonl"
+        with records_path.open("w", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return records_path
 
     def finish(
         self,
@@ -384,9 +421,17 @@ class ConfidenceHeadRecorder:
         dataset_metrics = self.dataset_metrics
         dataset_metrics.all_reduce()
         self.dataset_metrics = None
+        records = self._gather_records()
 
         if dist.get_rank() != 0 or int(metric_summary["sample_count"]) == 0:
             return None
+
+        if self.records_dir is not None and records:
+            records_path = self._write_records(
+                dataset_name=dataset_name,
+                records=records,
+            )
+            print(f"Wrote confidence records to {records_path}", flush=True)
 
         row = self.build_dataset_row(
             dataset_name=dataset_name,

@@ -101,6 +101,7 @@ def build_dspark_proposal(
     block_size: int,
     temperature: float,
     confidence_threshold: float,
+    confidence_temperatures: torch.Tensor | None = None,
 ) -> DSparkDraftProposal:
     assert draft_input_ids.size(0) == 1, "build_dspark_proposal requires batch_size=1"
     proposal_hidden_states = block_hidden[:, :block_size, :]
@@ -124,6 +125,12 @@ def build_dspark_proposal(
         )
         if confidence_logits is None:
             return _empty_dspark_proposal(draft_input_ids)
+        if confidence_temperatures is not None:
+            # Sequential Temperature Scaling: divide each position's logit by
+            # its fitted temperature so downstream consumers (the threshold
+            # early-stop and the calibration metrics) see calibrated
+            # probabilities.
+            confidence_logits = confidence_logits / confidence_temperatures
         proposal_draft_tokens = _confident_prefix_length(
             confidence_logits,
             block_size=block_size,

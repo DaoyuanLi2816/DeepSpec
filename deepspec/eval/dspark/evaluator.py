@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,11 +36,36 @@ class Qwen3DSparkEvaluator(BaseEvaluator):
 
     def __init__(self, local_rank: int, args):
         super().__init__(local_rank, args)
+        self.confidence_temperatures = self._load_confidence_temperatures()
         self.confidence_head_recorder = self._build_confidence_head_recorder()
 
     @property
     def max_proposal_tokens(self) -> int:
         return int(self.draft_model.block_size)
+
+    def _load_confidence_temperatures(self) -> torch.Tensor | None:
+        path = getattr(self.args, "confidence_calibration_path", None)
+        if path is None:
+            return None
+        assert self.draft_model.confidence_head is not None, (
+            "--confidence-calibration-path requires a draft model with a "
+            "confidence head."
+        )
+        with Path(path).open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        temperatures = [float(value) for value in payload["temperatures"]]
+        assert len(temperatures) == self.max_proposal_tokens, (
+            f"Calibration file {path} has {len(temperatures)} temperatures, "
+            f"expected block_size={self.max_proposal_tokens}."
+        )
+        assert all(value > 0.0 for value in temperatures), (
+            f"Calibration temperatures must be positive, got {temperatures}."
+        )
+        return torch.tensor(
+            temperatures,
+            dtype=torch.float32,
+            device=self.device,
+        )
 
     def _build_confidence_head_recorder(self) -> ConfidenceHeadRecorder | None:
         if self.draft_model.confidence_head is None:
@@ -54,6 +80,9 @@ class Qwen3DSparkEvaluator(BaseEvaluator):
                 / "artifacts"
                 / f"step_{self.args.step}"
             )
+        records_dir = None
+        if getattr(self.args, "confidence_dump_dir", None) is not None:
+            records_dir = Path(self.args.confidence_dump_dir)
         return ConfidenceHeadRecorder(
             device=self.device,
             max_proposal_tokens=self.max_proposal_tokens,
@@ -63,6 +92,7 @@ class Qwen3DSparkEvaluator(BaseEvaluator):
             tensorboard_dir=self.args.tensorboard_dir,
             step=self.args.step,
             artifact_root=artifact_root,
+            records_dir=records_dir,
         )
 
     def build_models(self) -> tuple[object, Qwen3DSparkModel, AutoTokenizer]:
@@ -129,6 +159,7 @@ class Qwen3DSparkEvaluator(BaseEvaluator):
             block_size=self.max_proposal_tokens,
             temperature=float(self.args.temperature),
             confidence_threshold=float(self.args.confidence_threshold),
+            confidence_temperatures=self.confidence_temperatures,
         )
 
     def _update(
